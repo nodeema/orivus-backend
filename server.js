@@ -1,80 +1,98 @@
-const express = require('express');
-const { Pool } = require('pg');
-const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken');
-const cors = require('cors');
+// server.js
+const express = require("express");
+const bodyParser = require("body-parser");
+const { Pool } = require("pg");
+const jwt = require("jsonwebtoken");
 
 const app = express();
-app.use(express.json());
-app.use(cors());
+app.use(bodyParser.json());
 
-// Connect to PostgreSQL (Render provides DATABASE_URL in environment variables)
+// ---- Database connection ----
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false } // required for Render Postgres
+  ssl: { rejectUnauthorized: false } // required for Render PostgreSQL
 });
 
-// Create users table if not exists
-(async () => {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      username VARCHAR(50),
-      country VARCHAR(50),
-      email VARCHAR(100) UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      age INT,
-      role VARCHAR(20) DEFAULT 'member',
-      subscribed BOOLEAN DEFAULT false
-    );
-  `);
-})();
+// ---- Ensure admin exists ----
+async function ensureAdmin() {
+  const adminEmail = "assbreakerzx@gmail.com";
+  const adminPassword = "omaramarvin1755"; // ⚠️ In production, hash this!
+  const adminUsername = "Admin";
 
-// Signup
-app.post('/signup', async (req, res) => {
-  const { username, country, email, password, age } = req.body;
-  const hashedPassword = await bcrypt.hash(password, 10);
   try {
-    await pool.query(
-      'INSERT INTO users (username, country, email, password_hash, age) VALUES ($1, $2, $3, $4, $5)',
-      [username, country, email, hashedPassword, age]
-    );
-    res.json({ message: 'User created successfully' });
+    const res = await pool.query("SELECT * FROM users WHERE email=$1", [adminEmail]);
+    if (res.rows.length === 0) {
+      await pool.query(
+        "INSERT INTO users (email, password, username, country, age, role) VALUES ($1,$2,$3,$4,$5,$6)",
+        [adminEmail, adminPassword, adminUsername, "N/A", "N/A", "admin"]
+      );
+      console.log("✅ Admin account created");
+    } else {
+      console.log("ℹ️ Admin already exists");
+    }
   } catch (err) {
-    res.status(400).json({ error: 'Email already exists' });
+    console.error("Error ensuring admin:", err);
+  }
+}
+
+// ---- Signup ----
+app.post("/signup", async (req, res) => {
+  const { email, password, username, country, age } = req.body;
+  try {
+    const exists = await pool.query("SELECT * FROM users WHERE email=$1", [email]);
+    if (exists.rows.length > 0) {
+      return res.json({ success: false, message: "Email already exists" });
+    }
+    await pool.query(
+      "INSERT INTO users (email, password, username, country, age, role) VALUES ($1,$2,$3,$4,$5,$6)",
+      [email, password, username, country, age, "member"]
+    );
+    res.json({ success: true, user: { email, username, role: "member" } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
-// Login
-app.post('/login', async (req, res) => {
+// ---- Login ----
+app.post("/login", async (req, res) => {
   const { email, password } = req.body;
-  const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-  const user = result.rows[0];
-  if (!user) return res.status(400).json({ error: 'User not found' });
-
-  const valid = await bcrypt.compare(password, user.password_hash);
-  if (!valid) return res.status(400).json({ error: 'Invalid password' });
-
-  const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET || 'secretkey', { expiresIn: '1h' });
-  res.json({ message: 'Login successful', token });
+  try {
+    const result = await pool.query("SELECT * FROM users WHERE email=$1 AND password=$2", [email, password]);
+    if (result.rows.length === 0) {
+      return res.json({ success: false, message: "Invalid email or password" });
+    }
+    const user = result.rows[0];
+    // Generate a simple JWT
+    const token = jwt.sign({ email: user.email, role: user.role }, process.env.JWT_SECRET || "secretkey");
+    res.json({ success: true, token, role: user.role });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
 });
 
-// Subscribe
-app.post('/subscribe', async (req, res) => {
-  const { email } = req.body;
-  const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-  const user = result.rows[0];
-  if (!user) return res.status(400).json({ error: 'User not found' });
-
-  await pool.query('UPDATE users SET subscribed = true WHERE email = $1', [email]);
-  res.json({ message: 'Subscription successful' });
+// ---- Get all users (admin only) ----
+app.get("/users", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT email, username, country, age, role FROM users");
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
 });
 
-// Admin - list users
-app.get('/users', async (req, res) => {
-  const result = await pool.query('SELECT * FROM users');
-  res.json(result.rows);
+// ---- Root route ----
+app.get("/", (req, res) => {
+  res.send("Backend is running ✅");
 });
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// ---- Start server ----
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, async () => {
+  console.log(`Server running on port ${PORT}`);
+  await ensureAdmin(); // seed admin on startup
+});
+
+

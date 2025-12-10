@@ -3,9 +3,11 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const { Pool } = require("pg");
 const jwt = require("jsonwebtoken");
+const cors = require("cors");
 
 const app = express();
 app.use(bodyParser.json());
+app.use(cors()); // allow requests from GitHub Pages
 
 // ---- Database connection ----
 const pool = new Pool({
@@ -63,7 +65,6 @@ app.post("/login", async (req, res) => {
       return res.json({ success: false, message: "Invalid email or password" });
     }
     const user = result.rows[0];
-    // Generate a simple JWT
     const token = jwt.sign({ email: user.email, role: user.role }, process.env.JWT_SECRET || "secretkey");
     res.json({ success: true, token, role: user.role });
   } catch (err) {
@@ -72,7 +73,7 @@ app.post("/login", async (req, res) => {
   }
 });
 
-// ---- Get all users (admin only) ----
+// ---- Get all users ----
 app.get("/users", async (req, res) => {
   try {
     const result = await pool.query("SELECT email, username, country, age, role FROM users");
@@ -94,5 +95,6 @@ app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   await ensureAdmin(); // seed admin on startup
 });
+
 
 
